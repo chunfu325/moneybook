@@ -97,7 +97,9 @@
 
   /* Add form */
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-top: 12px; }
-  .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .chips { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .chip { grid-column: span 2; }
+  .chip.wide { grid-column: span 3; }
   .chip {
     font: inherit; font-size: 15px; font-weight: 500;
     border: 1px solid var(--line); background: transparent; color: var(--ink);
@@ -136,6 +138,15 @@
   .empty { color: var(--muted); text-align: center; padding: 22px 0 10px; margin: 0; }
   .list-head { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 14px; margin: 0 0 4px; }
 
+  /* Month detail */
+  .day-group { padding: 12px 0 4px; border-bottom: 1px solid var(--line); }
+  .day-group:last-child { border-bottom: 0; }
+  .day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-weight: 700; }
+  .day-head .sub { font-variant-numeric: tabular-nums; color: var(--accent); }
+  .day-group .item { padding: 8px 0; border-bottom: 0; }
+  .day-group .item .name { font-weight: 400; color: var(--ink); }
+  .day-group .item .amt { font-weight: 500; }
+
   [hidden] { display: none !important; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -173,7 +184,8 @@
         <button type="button" class="chip" data-cat="早餐" aria-pressed="false">早餐</button>
         <button type="button" class="chip" data-cat="午餐" aria-pressed="false">午餐</button>
         <button type="button" class="chip" data-cat="晚餐" aria-pressed="false">晚餐</button>
-        <button type="button" class="chip" data-cat="自訂" aria-pressed="false">自訂</button>
+        <button type="button" class="chip wide" data-cat="全聯巧婦" aria-pressed="false">全聯巧婦</button>
+        <button type="button" class="chip wide" data-cat="自訂" aria-pressed="false">自訂</button>
       </div>
       <input class="field" id="custom" type="text" maxlength="30" placeholder="輸入自訂名稱,例如:飲料、交通" hidden>
       <div class="row">
@@ -187,6 +199,14 @@
       <p class="list-head"><span id="list-title"></span><span id="list-count"></span></p>
       <ul class="list" id="list"></ul>
       <p class="empty" id="empty">這天還沒有記錄,在上方新增第一筆吧。</p>
+    </div>
+  </section>
+
+  <section id="month-view" hidden>
+    <div class="card">
+      <p class="list-head"><span>本月消費明細</span><span id="month-count"></span></p>
+      <div id="month-list"></div>
+      <p class="empty" id="month-empty" hidden>這個月還沒有記錄。</p>
     </div>
   </section>
 
@@ -221,7 +241,12 @@
     getMonth: function (m) {
       var items = [], days = 0;
       Object.keys(ldata).forEach(function (k) {
-        if (k.indexOf(m) === 0 && ldata[k].length) { items = items.concat(ldata[k]); days++; }
+        if (k.indexOf(m) === 0 && ldata[k].length) {
+          items = items.concat(ldata[k].map(function (x) {
+            return { id: x.id, label: x.label, amount: x.amount, ts: x.ts, date: k };
+          }));
+          days++;
+        }
       });
       return Promise.resolve({ items: items, days: days });
     },
@@ -270,7 +295,11 @@
         var items = [], days = 0;
         if (obj) Object.keys(obj).forEach(function (k) {
           var a = toArray(obj[k]);
-          if (a.length) { items = items.concat(a); days++; }
+          if (a.length) {
+            a.forEach(function (x) { x.date = k; });
+            items = items.concat(a);
+            days++;
+          }
         });
         return { items: items, days: days };
       });
@@ -305,6 +334,7 @@
     sync: $('sync'), when: $('when'), totalLabel: $('total-label'), total: $('total'), meta: $('meta'),
     dayView: $('day-view'), chips: $('chips'), custom: $('custom'),
     amount: $('amount'), add: $('add'), error: $('error'),
+    monthView: $('month-view'), monthList: $('month-list'), monthCount: $('month-count'), monthEmpty: $('month-empty'),
     listTitle: $('list-title'), listCount: $('list-count'), list: $('list'), empty: $('empty')
   };
 
@@ -349,6 +379,7 @@
     el.pickDate.hidden = mode !== 'date';
     el.pickMonth.hidden = !isMonth;
     el.dayView.hidden = isMonth;
+    el.monthView.hidden = !isMonth;
 
     // 同步狀態
     if (!CLOUD) {
@@ -370,6 +401,7 @@
       el.meta.textContent = !view.loaded ? '載入中…'
         : view.month.items.length ? '共 ' + view.month.items.length + ' 筆,有記帳 ' + view.month.days + ' 天'
         : '這個月還沒有記錄';
+      renderMonthList();
       return;
     }
 
@@ -414,6 +446,48 @@
       c.setAttribute('aria-pressed', String(c.getAttribute('data-cat') === cat));
     });
     el.custom.hidden = cat !== '自訂';
+  }
+
+  function renderMonthList() {
+    var items = view.month.items;
+    el.monthCount.textContent = view.loaded && items.length ? '共 ' + items.length + ' 筆' : '';
+    el.monthEmpty.hidden = !view.loaded || items.length > 0;
+    el.monthList.innerHTML = '';
+
+    var groups = {};
+    items.forEach(function (it) { (groups[it.date] = groups[it.date] || []).push(it); });
+    Object.keys(groups).sort().reverse().forEach(function (d) {
+      var list = groups[d].slice().sort(function (a, b) { return a.ts - b.ts; });
+      var box = document.createElement('div');
+      box.className = 'day-group';
+
+      var head = document.createElement('div');
+      head.className = 'day-head';
+      var t = document.createElement('span');
+      t.textContent = parseDate(d).toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' });
+      var sub = document.createElement('span');
+      sub.className = 'sub';
+      sub.textContent = fmt(sum(list)) + ' 元';
+      head.appendChild(t); head.appendChild(sub);
+      box.appendChild(head);
+
+      var ul = document.createElement('ul');
+      ul.className = 'list';
+      list.forEach(function (it) {
+        var li = document.createElement('li');
+        li.className = 'item';
+        var name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = it.label;
+        var amt = document.createElement('span');
+        amt.className = 'amt';
+        amt.textContent = fmt(it.amount) + ' 元';
+        li.appendChild(name); li.appendChild(amt);
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+      el.monthList.appendChild(box);
+    });
   }
 
   function draw() { lastSig = null; render(); }
